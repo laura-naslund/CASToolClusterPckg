@@ -62,489 +62,548 @@
 #'
 #' @export
 
+state <- "Connecticut"
+pct_var <- 60
+minCOMIDsCluster <- 0.2
+user_numclust <- NULL
+
 rm(list = ls())
 commit_hash <- system("git rev-parse --short=8 HEAD", intern = TRUE)
 
-# STEP 1: Prep ----
-## set vars ----
-tictoc::tic("Total")
-state <- "South Carolina"
-stateAbb <- state.abb[which(state.name == state)]
-yyyymmdd <- format(lubridate::now(), "%Y%m%d")
-clusterByEco <- FALSE
-qc_keep <- c("QC_04", "QC_05", "QC_08","QC_MA")
-pct_var <- 60   # minimum percent of variation explained by components of PCA
-minCOMIDsCluster <- 0.2  # percent of COMIDs minimum per cluster, expressed as a proportion
-user_numclust <- NULL # user can use this parameter to override the default method of determining the final number of clusters
-numkk <- Inf # number of clusters to be used in the k-means pre-processing step of the hierarchical clustering, may be set to any number between 2 and max # reaches; 100 is default
+clusterReaches <- function(state, pct_var = 60, minCOMIDsCluster = 0.2, user_numclust = NULL, commit_hash = NA){
+  # STEP 1: Prep ----
+  ## set vars ----
+  tictoc::tic("Total")
+  stateAbb <- state.abb[which(state.name == state)]
+  yyyymmdd <- format(lubridate::now(), "%Y%m%d")
+  clusterByEco <- FALSE
+  qc_keep <- c("QC_04", "QC_05", "QC_08","QC_MA")
 
-## Declare functions ----
-`%>%` <- dplyr::`%>%`
-not_all_na <- function(x) {!all(is.na(x))}
-source("data-raw/clusterGraphic.R")
-source("data-raw/addClusterIDs.R")
+  ## Declare functions ----
+  `%>%` <- dplyr::`%>%`
+  not_all_na <- function(x) {!all(is.na(x))}
+  source("data-raw/clusterGraphic.R")
+  source("data-raw/addClusterIDs.R")
 
-## Set input directory
-in.dir <- file.path(getwd(), "data-raw", "ClusterInput")
+  ## Set input directory
+  in.dir <- file.path(getwd(), "data-raw", "ClusterInput")
 
-## Create output directories ----
-if(dir.exists(file.path(getwd(), "inst", "extdata", stateAbb)) == FALSE){dir.create(file.path(getwd(), "inst", "extdata", stateAbb))}
+  ## Create output directories ----
+  if(dir.exists(file.path(getwd(), "inst", "extdata", stateAbb)) == FALSE){dir.create(file.path(getwd(), "inst", "extdata", stateAbb))}
 
-if(dir.exists(file.path(getwd(), "data-raw", "ClusterOutput")) == FALSE){dir.create(file.path(getwd(), "data-raw","ClusterOutput"))}
+  if(dir.exists(file.path(getwd(), "data-raw", "ClusterOutput")) == FALSE){dir.create(file.path(getwd(), "data-raw","ClusterOutput"))}
 
-if(dir.exists(file.path(getwd(),"data-raw", "ClusterOutput", stateAbb)) == FALSE){dir.create(file.path(getwd(),"data-raw", "ClusterOutput", stateAbb))}
-out.dir <- file.path(getwd(), "data-raw","ClusterOutput", stateAbb)
+  if(dir.exists(file.path(getwd(),"data-raw", "ClusterOutput", stateAbb)) == FALSE){dir.create(file.path(getwd(),"data-raw", "ClusterOutput", stateAbb))}
+  out.dir <- file.path(getwd(), "data-raw","ClusterOutput", stateAbb)
 
-out_folders <- c("Boundary", "Ecoregions", "HCPC", "Histograms", "NHDPlus", "PCA", "QC")
+  out_folders <- c("Boundary", "HCPC", "Histograms", "NHDPlus", "PCA", "QC")
 
-for(i in 1:length(out_folders)){
-  if(dir.exists(file.path(out.dir, out_folders[i]))==FALSE){
-    dir.create(file.path(out.dir, out_folders[i]))
-  }
-}
-
-## Load/download required libraries
-libs <- c("tidyverse", "nhdplusTools", "StreamCatTools", "sf", "moments", "factoextra",
-          "cowplot", "FactoMineR", "missMDA", "tmap", "viridis", "ggrepel", "readxl", "tictoc", "usethis")
-needed_libs <- setdiff(libs, .packages(all.available = TRUE))
-if(rlang::is_empty(needed_libs)==FALSE){
-  install.packages(needed_libs)}
-lapply(libs, require, character.only = TRUE)
-# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
-# STEP 2: Get NHD+ data ----
-## Get state boundaries ----
-# downloaded GADM from https://gadm.org/
-STATE.shp <- sf::read_sf(file.path(in.dir,"gadm41_USA_shp/gadm41_USA_1.shp")) %>% filter(NAME_1 == state) %>%
-  st_transform(crs = 5070) %>% st_buffer(300) # add 300 m buffer to deal with simplified input shapefile geometry
-save(STATE.shp, file = file.path(out.dir, "Boundary", paste0(state, "_BoundaryShapefile.rda")))
-
-## Get NHD+ data from API ----
-# Citation for NHDPlus data: McKay, L., Bondelid, T., Dewald, T., Johnston, J., Moore, R., and Rea, A., “NHDPlus Version 2: User Guide”, 2012 and U.S. Geological Survey, 2019, National Hydrography Dataset (ver. USGS National Hydrography Dataset Best Resolution (NHD) for Hydrologic Unit (HU) [specify number of HuC2s here - 2001 (published 20191002), accessed [date] at https://www.epa.gov/waterdata/get-nhdplus-national-hydrography-dataset-plus-data
-# Citation for nhdlusTools: Blodgett, D., Johnson, J.M., 2022, nhdplusTools: Tools for Accessing and Working with the NHDPlus, https://doi.org/10.5066/P97AS8JD
-# Desired NHD+ variables
-variables <- c("comid", tolower(qc_keep), "slope")
-
-# Check for existence of data
-if (file.exists(file.path(out.dir, "NHDPlus", paste0("NHD_", state, ".rda")))) {
-  message("Previously saved NHDPlus data loaded")
-  load(file.path(out.dir, "NHDPlus", paste0("NHD_", state, ".rda")))
-} else {
-  message("Acquiring NHDPlus data")
-
-  tictoc::tic("Get NHD+ data")
-  NHD.STATE <- nhdplusTools::get_nhdplus(AOI = STATE.shp) %>%
-    dplyr::filter(ftype %in% c("Connector", "CanalDitch", "StreamRiver", "Drainageway", "ArtificialPath"))  %>%
-    dplyr::select(all_of(variables))
-  new.names <- c(toupper(variables), "geometry")
-  colnames(NHD.STATE) <- paste(new.names)
-  save(NHD.STATE, file = file.path(out.dir, "NHDPlus"
-                                   , paste0("NHD_", state, ".rda")))
-  tictoc::toc(log = TRUE)
-}
-# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
-# STEP 3: Get StreamCat data ----
-## Create a list of StreamCat variables & NHD variables used in the cluster analysis.
-## Write a file of StreamCat variables used as stressors in the CASTool.
-tictoc::tic("Get StreamCat data")
-if (file.exists(file.path(out.dir, "NHDPlus", paste0("NHD_SC_", state, ".rda"))) & file.exists(file.path(out.dir, "NHDPlus", paste0("NHD_SC_ID", state, ".rda")))) {
-  load(file.path(out.dir, "NHDPlus", paste0("NHD_SC_", state, ".rda")))
-  load(file.path(out.dir, "NHDPlus", paste0("NHD_SC_ID", state, ".rda")))
-  message("Previously saved StreamCat data loaded")
-} else {
-  message("Acquiring StreamCat data")
-
-  ## Read clustering variables ----
-  # Citation for StreamCat data: Hill, Ryan A., Marc H. Weber, Scott G. Leibowitz, Anthony R. Olsen, and Darren J. Thornbrugh, 2016. The Stream-Catchment (StreamCat) Dataset: A Database of Watershed Metrics for the Conterminous United States. Journal of the American Water Resources Association (JAWRA) 52:120-128. DOI: 10.1111/1752-1688.12372.
-  # Citation for StreamCatTools:   Weber, Marc H, Hill, Ryan A., Brookes, Allen F. 2024, StreamCatTools: Tools to work with the StreamCat API within R and access the full suite of StreamCat and LakeCat metrics, https://usepa.github.io/StreamCatTools
-
-  sc_ws_metrics <- read_csv(file.path(in.dir, "StreamCat_clusterVars.csv"))  %>%
-    dplyr::filter(Type == "watershed") %>%
-    pull(Variable)
-
-  sc_ws_metrics_str <- paste(sc_ws_metrics, collapse = ",")
-  WS.STATE <- StreamCatTools::sc_get_data(metric = sc_ws_metrics_str,
-                                          aoi = 'watershed',
-                                          state = stateAbb,
-                                          showAreaSqKm = TRUE) %>%
-    select(-catareasqkm, -catareasqkmrp100, -wsareasqkmrp100) %>%
-    rename("COMID" = "comid")
-
-  sc_id <- WS.STATE %>% select(COMID) %>%
-    mutate(ReachLoc = "Core")
-
-
-  stragglers <- setdiff(NHD.STATE$COMID, WS.STATE$COMID)  # COMIDs pulled the from NHD API but not StreamCat API
-  n_stragglers <- stragglers %>% length()
-  stragglers_str <- stragglers %>% paste(collapse = ",")
-
-  message("Reading in StreamCat variables for straggler COMIDS")
-  message("Requires ", ceiling(n_stragglers/500), " requests")
-
-  if(ceiling(n_stragglers/500) == 0){
-    message("n_stragglers = 0")
-  } else {
-    sc_stragglers <-NULL
-    message("n_stragglers/500 > 0")
-    for(q in 1:ceiling(n_stragglers/500)){  # pulling in 500 COMIDs at a time to not overwhelm the server
-
-      start_ind <- ((q-1)*500) + 1
-      end_ind <- 500 * q
-      print(paste0("getting ", start_ind, ":", end_ind))
-
-      temp.comids <- stragglers[start_ind:end_ind]
-
-      temp.comids <- temp.comids[!is.na(temp.comids)] %>% paste(collapse = ",")
-
-      tryCatch({temp_sc <- StreamCatTools::sc_get_data(metric = sc_ws_metrics_str,
-                                                       aoi = 'watershed',
-                                                       comid = temp.comids,
-                                                       showAreaSqKm = TRUE) %>%
-        dplyr::select(-catareasqkm, -catareasqkmrp100, -wsareasqkmrp100) %>%
-        rename("COMID" = "comid")
-
-      sc_stragglers <- sc_stragglers %>% bind_rows(temp_sc)
-      }, error = function(msg){
-        return(sc_stragglers)
-      })
+  for(i in 1:length(out_folders)){
+    if(dir.exists(file.path(out.dir, out_folders[i]))==FALSE){
+      dir.create(file.path(out.dir, out_folders[i]))
     }
   }
 
-  sc_id <- sc_id %>% bind_rows(sc_stragglers %>% select(COMID) %>% mutate(ReachLoc = "Buffer"))
+  ## Load/download required libraries
+  libs <- c("tidyverse", "nhdplusTools", "StreamCatTools", "sf", "moments", "factoextra",
+            "cowplot", "FactoMineR", "missMDA", "tmap", "viridis", "ggrepel", "readxl", "tictoc", "usethis", "caret")
+  needed_libs <- setdiff(libs, .packages(all.available = TRUE))
+  if(rlang::is_empty(needed_libs)==FALSE){
+    install.packages(needed_libs)}
+  lapply(libs, require, character.only = TRUE)
+  # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-  WS.STATE <- WS.STATE %>% bind_rows(sc_stragglers)
+  # STEP 2: Get NHD+ data ----
+  ## Get state boundaries ----
+  # downloaded GADM from https://gadm.org/
+  STATE.shp <- sf::read_sf(file.path(in.dir,"gadm41_USA_shp/gadm41_USA_1.shp")) %>% filter(NAME_1 == state) %>%
+    st_transform(crs = 5070) %>% st_buffer(300) # add 300 m buffer to deal with simplified input shapefile geometry
+  save(STATE.shp, file = file.path(out.dir, "Boundary", paste0(state, "_BoundaryShapefile.rda")))
 
-  WS.STATE.SCvars <- dplyr::left_join(NHD.STATE, WS.STATE, by = "COMID")
-  save(WS.STATE.SCvars, file = file.path(out.dir, "NHDPlus",
-                                         paste0("NHD_SC_", state, ".rda")))
-  save(sc_id, file = file.path(out.dir, "NHDPlus",
-                               paste0("NHD_SC_ID", state, ".rda")))
-}
+  ## Get NHD+ data from API ----
+  # Citation for NHDPlus data: McKay, L., Bondelid, T., Dewald, T., Johnston, J., Moore, R., and Rea, A., “NHDPlus Version 2: User Guide”, 2012 and U.S. Geological Survey, 2019, National Hydrography Dataset (ver. USGS National Hydrography Dataset Best Resolution (NHD) for Hydrologic Unit (HU) [specify number of HuC2s here - 2001 (published 20191002), accessed [date] at https://www.epa.gov/waterdata/get-nhdplus-national-hydrography-dataset-plus-data
+  # Citation for nhdlusTools: Blodgett, D., Johnson, J.M., 2022, nhdplusTools: Tools for Accessing and Working with the NHDPlus, https://doi.org/10.5066/P97AS8JD
+  # Desired NHD+ variables
+  variables <- c("comid", tolower(qc_keep), "slope")
 
-tictoc::toc(log = TRUE)
-# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+  # Check for existence of data
+  if (file.exists(file.path(out.dir, "NHDPlus", paste0("NHD_", state, ".rda")))) {
+    message("Previously saved NHDPlus data loaded")
+    load(file.path(out.dir, "NHDPlus", paste0("NHD_", state, ".rda")))
+  } else {
+    message("Acquiring NHDPlus data")
 
-# STEP 4: Data QC ----
-tictoc::tic("Perform QC of stream reach data")
+    tictoc::tic("Get NHD+ data")
+    NHD.STATE <- nhdplusTools::get_nhdplus(AOI = STATE.shp) %>%
+      dplyr::filter(ftype %in% c("Connector", "CanalDitch", "StreamRiver", "Drainageway", "ArtificialPath"))  %>%
+      dplyr::select(all_of(variables))
+    new.names <- c(toupper(variables), "geometry")
+    colnames(NHD.STATE) <- paste(new.names)
+    save(NHD.STATE, file = file.path(out.dir, "NHDPlus"
+                                     , paste0("NHD_", state, ".rda")))
+    tictoc::toc(log = TRUE)
+  }
+  # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-# check if there are any exact duplicates and remove
-n_dup <- WS.STATE.SCvars %>% group_by_all() %>% filter(n()>1) %>% nrow()
-if(n_dup == 0){
-  message("No duplicated rows")
-}
-if(n_dup!= 0){
-  message("Removing duplicate rows")
-  WS.STATE.SCvars <- WS.STATE.SCvars %>% distinct()
-}
+  # STEP 3: Get StreamCat data ----
+  ## Create a list of StreamCat variables & NHD variables used in the cluster analysis.
+  ## Write a file of StreamCat variables used as stressors in the CASTool.
+  tictoc::tic("Get StreamCat data")
+  if (file.exists(file.path(out.dir, "NHDPlus", paste0("NHD_SC_", state, ".rda"))) & file.exists(file.path(out.dir, "NHDPlus", paste0("NHD_SC_ID", state, ".rda")))) {
+    load(file.path(out.dir, "NHDPlus", paste0("NHD_SC_", state, ".rda")))
+    load(file.path(out.dir, "NHDPlus", paste0("NHD_SC_ID", state, ".rda")))
+    message("Previously saved StreamCat data loaded")
+  } else {
+    message("Acquiring StreamCat data")
 
-# drop columns with all NAs
-na_cols <- WS.STATE.SCvars %>%
-  st_drop_geometry() %>%
-  select_if(function(x) all(is.na(x))) %>%
-  names()
+    ## Read clustering variables ----
+    # Citation for StreamCat data: Hill, Ryan A., Marc H. Weber, Scott G. Leibowitz, Anthony R. Olsen, and Darren J. Thornbrugh, 2016. The Stream-Catchment (StreamCat) Dataset: A Database of Watershed Metrics for the Conterminous United States. Journal of the American Water Resources Association (JAWRA) 52:120-128. DOI: 10.1111/1752-1688.12372.
+    # Citation for StreamCatTools:   Weber, Marc H, Hill, Ryan A., Brookes, Allen F. 2024, StreamCatTools: Tools to work with the StreamCat API within R and access the full suite of StreamCat and LakeCat metrics, https://usepa.github.io/StreamCatTools
 
-if(length(na_cols) == 0){
-  message("No completely empty columns")
-}
-if(length(na_cols) != 0){
-  WS.STATE.SCvars <- WS.STATE.SCvars %>% dplyr::select(-all_of(na_cols))
-}
+    sc_ws_metrics <- read_csv(file.path(in.dir, "StreamCat_clusterVars.csv"))  %>%
+      dplyr::filter(Type == "watershed") %>%
+      pull(Variable)
 
-# replace negative slopes with NAs
-n_neg_slope <- WS.STATE.SCvars %>% filter(SLOPE < 0) %>% nrow()
-WS.STATE.SCvars <- WS.STATE.SCvars %>% mutate(SLOPE = if_else(SLOPE < 0, NA, SLOPE))
-message(paste0("Replacing ", n_neg_slope, " negative slope values with NAs"))
+    sc_ws_metrics_str <- paste(sc_ws_metrics, collapse = ",")
+    WS.STATE <- StreamCatTools::sc_get_data(metric = sc_ws_metrics_str,
+                                            aoi = 'watershed',
+                                            state = stateAbb,
+                                            showAreaSqKm = TRUE) %>%
+      dplyr::select(-catareasqkm, -catareasqkmrp100, -wsareasqkmrp100) %>%
+      rename("COMID" = "comid")
 
-# remove COMIDs without any StreamCat data
-WS.STATE.FinalRaw <- WS.STATE.SCvars %>%
-  st_drop_geometry() %>%
-  rename("wsareasqkmws" = "wsareasqkm") %>%
-  filter(!(if_all(ends_with("ws"), is.na)))
+    sc_id <- WS.STATE %>% dplyr::select(COMID) %>%
+      mutate(ReachLoc = "Core")
 
-n_na_row <- WS.STATE.SCvars %>% rename("wsareasqkmws" = "wsareasqkm") %>% filter(if_all(ends_with("ws"), is.na)) %>% nrow()
-message(paste0("Removing ", n_na_row, " rows without StreamCat data"))
 
-save(WS.STATE.FinalRaw, file = file.path(out.dir, "PCA",
-                                         paste0("FinalRawData", state, ".rda")))
+    stragglers <- setdiff(NHD.STATE$COMID, WS.STATE$COMID)  # COMIDs pulled the from NHD API but not StreamCat API
+    n_stragglers <- stragglers %>% length()
+    stragglers_str <- stragglers %>% paste(collapse = ",")
 
-tictoc::toc(log = TRUE)
-# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    message("Reading in StreamCat variables for straggler COMIDS")
+    message("Requires ", ceiling(n_stragglers/500), " requests")
 
-# STEP 5: Finalize dataset ----
-## Get stats ----
-tictoc::tic("Get statistics & transform variables, if necessary")
+    if(ceiling(n_stragglers/500) == 0){
+      message("n_stragglers = 0")
+    } else {
+      sc_stragglers <-NULL
+      message("n_stragglers/500 > 0")
+      for(q in 1:ceiling(n_stragglers/500)){  # pulling in 500 COMIDs at a time to not overwhelm the server
 
-if (file.exists(file.path(out.dir, "Histograms", paste0(state, "_stats.tab")))) {
-  WS.STATE.stats <- read.delim(file.path(out.dir, "Histograms", paste0(state, "_stats.tab")) , sep = "\t")
-  message("Previously saved histogram stats")
-} else {
+        start_ind <- ((q-1)*500) + 1
+        end_ind <- 500 * q
+        print(paste0("getting ", start_ind, ":", end_ind))
 
-  WS.STATE.stats <- WS.STATE.FinalRaw %>%
-    tidyr::pivot_longer(cols = !COMID, names_to = "Variable", values_to = "Value",
-                        values_drop_na = FALSE) %>%
-    dplyr::group_by(Variable) %>%
-    dplyr::summarise(N = dplyr::n() - sum(is.na(Value))
-                     , NumNAs = sum(is.na(Value))
-                     , Min = min(Value, na.rm = TRUE)
-                     , Max = max(Value, na.rm = TRUE)
-                     , Mean = mean(Value, na.rm = TRUE)
-                     , Median = median(Value, na.rm = TRUE)
-                     , SD = sd(Value, na.rm = TRUE)
-                     , Kurtosis = moments::kurtosis(Value, na.rm = TRUE)
-                     , Skewness = moments::skewness(Value, na.rm = TRUE)
-                     , SkewnessSq = Skewness * Skewness
-                     , .groups = "drop_last")
-  write.table(WS.STATE.stats
-              , file.path(out.dir, "Histograms", paste0(state, "_stats.tab"))
-              , sep = "\t", col.names = TRUE, row.names = FALSE, append = FALSE)
-}
+        temp.comids <- stragglers[start_ind:end_ind]
 
-if (file.exists(file.path(out.dir, "QC", paste0(state, "_WsTransfData.tab"))) & file.exists(file.path(out.dir, "QC", paste0(state, "_lambdas.tab")))){
-  WS.STATE.FinalTransf <- read.delim(file.path(out.dir, "QC", paste0(state, "_WsTransfData.tab")), sep = "\t")
-  df.lambda <- read.delim(file.path(out.dir, "QC", paste0(state, "_lambdas.tab")), sep = "\t")
-  message("Previously saved QC files")
-} else{
+        temp.comids <- temp.comids[!is.na(temp.comids)] %>% paste(collapse = ",")
 
-  ## Transform/scale variables ----
-  ## Plot histograms before/after ----
-  cols <- setdiff(colnames(WS.STATE.FinalRaw), "COMID")
-  df.temp <- dplyr::select(WS.STATE.FinalRaw, COMID)
-  df.temp_scaled <- dplyr::select(WS.STATE.FinalRaw, COMID)
-  df.lambda <- data.frame(Variable = character(), Lambda = double())
-  rm_vars <- c()
+        tryCatch({temp_sc <- StreamCatTools::sc_get_data(metric = sc_ws_metrics_str,
+                                                         aoi = 'watershed',
+                                                         comid = temp.comids,
+                                                         showAreaSqKm = TRUE) %>%
+          dplyr::select(-catareasqkm, -catareasqkmrp100, -wsareasqkmrp100) %>%
+          rename("COMID" = "comid")
 
-  for (c in seq_along(cols)) {
-    col <- cols[c]
-    print(col)
-    fn <- paste0(col, ".png")
-    fn2 <- paste0(col, "_transf.png")
-
-    # plot histogram of data
-    p <- ggplot2::ggplot(WS.STATE.FinalRaw, ggplot2::aes(x = .data[[col]])) +
-      ggplot2::geom_histogram(bins = 500) +
-      ggplot2::ggtitle(paste0("Histogram of ", col, " observations")) +
-      ggplot2::xlab(col) +
-      ggplot2::theme_bw()
-    ggplot2::ggsave(file.path(out.dir, "Histograms", fn), p, width = 6, height = 4
-                    , units = "in")
-
-    sk_sq <- WS.STATE.stats %>%
-      dplyr::filter(Variable == col) %>%
-      dplyr::select(SkewnessSq)
-
-    sd_dat <- WS.STATE.stats %>%
-      dplyr::filter(Variable == col) %>%
-      dplyr::select(SD)
-
-    if (as.numeric(sd_dat) != 0) {
-
-      if (grepl("PCT", col)) {         # Do not transform PCT variables
-        lambda <- NA_real_
-        new_v <- WS.STATE.FinalRaw[[col]]
-        df.temp <- df.temp %>% mutate(!!col := new_v)
-        subtitle <- "Not transformed, centered and scaled"
+        sc_stragglers <- sc_stragglers %>% bind_rows(temp_sc)
+        }, error = function(msg){
+          return(sc_stragglers)
+        })
       }
+    }
 
-      else if (as.numeric(sk_sq)< 3){                                # Do not transform values with minimal skewness
-        lambda <- NA_real_
-        new_v <- WS.STATE.FinalRaw[[col]]
-        df.temp <- df.temp %>% mutate(!!col := new_v)
-        subtitle <- "Not transformed, centered and scaled"
-      }
+    sc_id <- sc_id %>% bind_rows(sc_stragglers %>% dplyr::select(COMID) %>% mutate(ReachLoc = "Buffer"))
 
-      else {     # Box-Cox transform highly skewed variables
-        v <- WS.STATE.FinalRaw[[col]] + 1e-12
-        bc <- MASS::boxcox(lm(v ~ 1), plotit = FALSE)
-        lambda <- bc$x[which.max(bc$y)]
+    WS.STATE <- WS.STATE %>% bind_rows(sc_stragglers)
 
-        if (lambda != 0) {
-          new_v <- ((v ^ lambda) - 1) / lambda
-        } else {
-          msg <- paste(col, " has lambda equal zero.")
-          message(msg)
-          new_v <- log10(v)
-        }
+    WS.STATE.SCvars <- dplyr::left_join(NHD.STATE, WS.STATE, by = "COMID")
+    save(WS.STATE.SCvars, file = file.path(out.dir, "NHDPlus",
+                                           paste0("NHD_SC_", state, ".rda")))
+    save(sc_id, file = file.path(out.dir, "NHDPlus",
+                                 paste0("NHD_SC_ID", state, ".rda")))
+  }
 
-        if (all(is.na(new_v))) {
-          message("all new_v NA")
-          new_v <- WS.STATE.FinalRaw[[col]]
-          subtitle <- "Not transformed, centered and scaled"
-        } else {
-          subtitle <- paste0("lambda = ", round(lambda, 4), ", centered and scaled")
-        }
+  tictoc::toc(log = TRUE)
+  # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-        df.temp <- df.temp %>% mutate(!!col := new_v)
-      }
+  # STEP 4: Data QC ----
+  tictoc::tic("Perform QC of stream reach data")
 
+  # check if there are any exact duplicates and remove
+  n_dup <- WS.STATE.SCvars %>% group_by_all() %>% filter(n()>1) %>% nrow()
+  if(n_dup == 0){
+    message("No duplicated rows")
+  }
+  if(n_dup!= 0){
+    message("Removing duplicate rows")
+    WS.STATE.SCvars <- WS.STATE.SCvars %>% distinct()
+  }
 
+  # drop columns with all NAs
+  na_cols <- WS.STATE.SCvars %>%
+    st_drop_geometry() %>%
+    select_if(function(x) all(is.na(x))) %>%
+    names()
 
-      # Scale variables, this is just for visualization of the centered and scaled distribution.
-      # The the unscaled and uncentered data are passed to the PCA functions which scale and center the data.
-      new_v_scaled <- scale(new_v, center = TRUE, scale = TRUE)
-      df.temp_scaled <- df.temp_scaled %>% mutate(!!col := new_v_scaled)
+  if(length(na_cols) == 0){
+    message("No completely empty columns")
+  }
+  if(length(na_cols) != 0){
+    WS.STATE.SCvars <- WS.STATE.SCvars %>% dplyr::select(-all_of(na_cols))
+  }
 
-      p2 <- ggplot2::ggplot(df.temp_scaled, ggplot2::aes(x = .data[[col]])) +
+  # replace negative slopes with NAs
+  n_neg_slope <- WS.STATE.SCvars %>% filter(SLOPE < 0) %>% nrow()
+  WS.STATE.SCvars <- WS.STATE.SCvars %>% mutate(SLOPE = if_else(SLOPE < 0, NA, SLOPE))
+  message(paste0("Replacing ", n_neg_slope, " negative slope values with NAs"))
+
+  # remove COMIDs without any StreamCat data
+  WS.STATE.FinalRaw <- WS.STATE.SCvars %>%
+    st_drop_geometry() %>%
+    rename("wsareasqkmws" = "wsareasqkm") %>%
+    filter(!(if_all(ends_with("ws"), is.na)))
+
+  n_na_row <- WS.STATE.SCvars %>% rename("wsareasqkmws" = "wsareasqkm") %>% filter(if_all(ends_with("ws"), is.na)) %>% nrow()
+  message(paste0("Removing ", n_na_row, " rows without StreamCat data"))
+
+  save(WS.STATE.FinalRaw, file = file.path(out.dir, "PCA",
+                                           paste0("FinalRawData", state, ".rda")))
+
+  tictoc::toc(log = TRUE)
+  # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+  # STEP 5: Finalize dataset ----
+  ## Get stats ----
+  tictoc::tic("Get statistics & transform variables, if necessary")
+
+  if (file.exists(file.path(out.dir, "Histograms", paste0(state, "_stats.tab")))) {
+    WS.STATE.stats <- read.delim(file.path(out.dir, "Histograms", paste0(state, "_stats.tab")) , sep = "\t")
+    message("Previously saved histogram stats")
+  } else {
+
+    WS.STATE.stats <- WS.STATE.FinalRaw %>%
+      tidyr::pivot_longer(cols = !COMID, names_to = "Variable", values_to = "Value",
+                          values_drop_na = FALSE) %>%
+      dplyr::group_by(Variable) %>%
+      dplyr::summarise(N = dplyr::n() - sum(is.na(Value))
+                       , NumNAs = sum(is.na(Value))
+                       , Min = min(Value, na.rm = TRUE)
+                       , Max = max(Value, na.rm = TRUE)
+                       , Mean = mean(Value, na.rm = TRUE)
+                       , Median = median(Value, na.rm = TRUE)
+                       , SD = sd(Value, na.rm = TRUE)
+                       , Kurtosis = moments::kurtosis(Value, na.rm = TRUE)
+                       , Skewness = moments::skewness(Value, na.rm = TRUE)
+                       , SkewnessSq = Skewness * Skewness
+                       , .groups = "drop_last")
+    write.table(WS.STATE.stats
+                , file.path(out.dir, "Histograms", paste0(state, "_stats.tab"))
+                , sep = "\t", col.names = TRUE, row.names = FALSE, append = FALSE)
+  }
+
+  if (file.exists(file.path(out.dir, "QC", paste0(state, "_WsTransfData.tab"))) & file.exists(file.path(out.dir, "QC", paste0(state, "_lambdas.tab")))){
+    WS.STATE.FinalTransf <- read.delim(file.path(out.dir, "QC", paste0(state, "_WsTransfData.tab")), sep = "\t")
+    df.lambda <- read.delim(file.path(out.dir, "QC", paste0(state, "_lambdas.tab")), sep = "\t")
+    message("Previously saved QC files")
+  } else{
+
+    ## Transform/scale variables ----
+    ## Plot histograms before/after ----
+    cols <- setdiff(colnames(WS.STATE.FinalRaw), "COMID")
+    df.temp <- dplyr::select(WS.STATE.FinalRaw, COMID)
+    df.temp_scaled <- dplyr::select(WS.STATE.FinalRaw, COMID)
+    df.lambda <- data.frame(Variable = character(), Lambda = double())
+    rm_vars <- c()
+
+    for (c in seq_along(cols)) {
+      col <- cols[c]
+      print(col)
+      fn <- paste0(col, ".png")
+      fn2 <- paste0(col, "_transf.png")
+
+      # plot histogram of data
+      p <- ggplot2::ggplot(WS.STATE.FinalRaw, ggplot2::aes(x = .data[[col]])) +
         ggplot2::geom_histogram(bins = 500) +
         ggplot2::ggtitle(paste0("Histogram of ", col, " observations")) +
-        ggplot2::labs(subtitle = subtitle) +
         ggplot2::xlab(col) +
         ggplot2::theme_bw()
-      ggplot2::ggsave(file.path(out.dir, "Histograms", fn2), p2
-                      , width = 6, height = 4, units = "in")
+      ggplot2::ggsave(file.path(out.dir, "Histograms", fn), p, width = 6, height = 4
+                      , units = "in")
 
-      df.lambda <- rbind(df.lambda, cbind(col, round(lambda, 4)))
+      sk_sq <- WS.STATE.stats %>%
+        dplyr::filter(Variable == col) %>%
+        dplyr::select(SkewnessSq)
+
+      sd_dat <- WS.STATE.stats %>%
+        dplyr::filter(Variable == col) %>%
+        dplyr::select(SD)
+
+      if (as.numeric(sd_dat) != 0) {
+
+        if (grepl("PCT", col)) {         # Do not transform PCT variables
+          lambda <- NA_real_
+          new_v <- WS.STATE.FinalRaw[[col]]
+          df.temp <- df.temp %>% mutate(!!col := new_v)
+          subtitle <- "Not transformed, centered and scaled"
+        }
+
+        else if (as.numeric(sk_sq)< 3){                                # Do not transform values with minimal skewness
+          lambda <- NA_real_
+          new_v <- WS.STATE.FinalRaw[[col]]
+          df.temp <- df.temp %>% mutate(!!col := new_v)
+          subtitle <- "Not transformed, centered and scaled"
+        }
+
+        else {     # Box-Cox transform highly skewed variables
+
+          v_val <- WS.STATE.FinalRaw[[col]] + 1e-12
+
+          # browser()
+          bc <- caret::BoxCoxTrans(v_val, na.rm = TRUE)
+          lambda <- bc$lambda
+
+          # bc <- MASS::boxcox(lm(v_val ~ 1), plotit = FALSE) # for some reason, MASS::boxcox will not evaluate in a function
+          # lambda <- bc$x[which.max(bc$y)]
+
+          if (lambda != 0) {
+            new_v <- ((v_val ^ lambda) - 1) / lambda
+          } else {
+            msg <- paste(col, " has lambda equal zero.")
+            message(msg)
+            new_v <- log10(v_val)
+          }
+
+          if (all(is.na(new_v))) {
+            message("all new_v NA")
+            new_v <- WS.STATE.FinalRaw[[col]]
+            subtitle <- "Not transformed, centered and scaled"
+          } else {
+            subtitle <- paste0("lambda = ", round(lambda, 4), ", centered and scaled")
+          }
+
+          df.temp <- df.temp %>% mutate(!!col := new_v)
+        }
+
+
+
+        # Scale variables, this is just for visualization of the centered and scaled distribution.
+        # The the unscaled and uncentered data are passed to the PCA functions which scale and center the data.
+        new_v_scaled <- scale(new_v, center = TRUE, scale = TRUE)
+        df.temp_scaled <- df.temp_scaled %>% mutate(!!col := new_v_scaled)
+
+        p2 <- ggplot2::ggplot(df.temp_scaled, ggplot2::aes(x = .data[[col]])) +
+          ggplot2::geom_histogram(bins = 500) +
+          ggplot2::ggtitle(paste0("Histogram of ", col, " observations")) +
+          ggplot2::labs(subtitle = subtitle) +
+          ggplot2::xlab(col) +
+          ggplot2::theme_bw()
+        ggplot2::ggsave(file.path(out.dir, "Histograms", fn2), p2
+                        , width = 6, height = 4, units = "in")
+
+        df.lambda <- rbind(df.lambda, cbind(col, round(lambda, 4)))
+      }
+
+      if (as.numeric(sd_dat) == 0) {          # Do not include variables with zero variation
+        rm_vars <- c(rm_vars, col)
+      }
+
     }
 
-    if (as.numeric(sd_dat) == 0) {          # Do not include variables with zero variation
-      rm_vars <- c(rm_vars, col)
-    }
+    message(paste0("removed: ", paste(rm_vars, collapse = ", "), " for 0 variation"))
 
+    WS.STATE.FinalTransf <- df.temp
+    write.table(WS.STATE.FinalTransf, file.path(out.dir, "QC", paste0(state, "_WsTransfData.tab"))
+                , sep = "\t", col.names = TRUE, row.names = FALSE, append = FALSE)
+
+    write.table(df.lambda, file.path(out.dir, "QC", paste0(state, "_lambdas.tab"))
+                , sep = "\t", col.names = TRUE, row.names = FALSE, append = FALSE)
   }
 
-  message(paste0("removed: ", paste(rm_vars, collapse = ", "), " for 0 variation"))
+  if(file.exists(file.path(out.dir, "Histograms", paste0(state, "_TransfData_stats.tab")))){
+    WS.STATE.transf.stats <- read.delim(file.path(out.dir, "Histograms", paste0(state, "_TransfData_stats.tab")), sep = "\t")
+    message("Previous saved histogram transformed stats")
+  } else{
+    ## Get new stats ----
+    WS.STATE.transf.stats <- WS.STATE.FinalTransf %>%
+      tidyr::pivot_longer(cols = !COMID, names_to = "Variable"
+                          , values_to = "Value", values_drop_na = FALSE) %>%
+      dplyr::group_by(Variable) %>%
+      dplyr::summarise(N = dplyr::n() - sum(is.na(Value))
+                       , NumNAs = sum(is.na(Value))
+                       , Min = min(Value, na.rm = TRUE)
+                       , Max = max(Value, na.rm = TRUE)
+                       , Mean = mean(Value, na.rm = TRUE)
+                       , Median = median(Value, na.rm = TRUE)
+                       , SD = sd(Value, na.rm = TRUE)
+                       , Kurtosis = moments::kurtosis(Value, na.rm = TRUE)
+                       , Skewness = moments::skewness(Value, na.rm = TRUE)
+                       , SkewnessSq = Skewness * Skewness
+                       , .groups = "drop_last")
+    write.table(WS.STATE.transf.stats
+                , file.path(out.dir, "Histograms", paste0(state, "_TransfData_stats.tab"))
+                , sep = "\t", col.names = TRUE, row.names = FALSE, append = FALSE)
+  }
+  tictoc::toc(log = TRUE)
+  # ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-  WS.STATE.FinalTransf <- df.temp
-  write.table(WS.STATE.FinalTransf, file.path(out.dir, "QC", paste0(state, "_WsTransfData.tab"))
-              , sep = "\t", col.names = TRUE, row.names = FALSE, append = FALSE)
+  # STEP 6: PCA ----
 
-  write.table(df.lambda, file.path(out.dir, "QC", paste0(state, "_lambdas.tab"))
-              , sep = "\t", col.names = TRUE, row.names = FALSE, append = FALSE)
-}
+  if(file.exists(file.path(out.dir, "PCA", paste0(state, "_PCAresults.rda")))){
+    load(file.path(out.dir, "PCA", paste0(state, "_PCAresults.rda")))
+  } else {
 
-if(file.exists(file.path(out.dir, "Histograms", paste0(state, "_TransfData_stats.tab")))){
-  WS.STATE.transf.stats <- read.delim(file.path(out.dir, "Histograms", paste0(state, "_TransfData_stats.tab")), sep = "\t")
-  message("Previous saved histogram transformed stats")
-} else{
-  ## Get new stats ----
-  WS.STATE.transf.stats <- WS.STATE.FinalTransf %>%
-    tidyr::pivot_longer(cols = !COMID, names_to = "Variable"
-                        , values_to = "Value", values_drop_na = FALSE) %>%
-    dplyr::group_by(Variable) %>%
-    dplyr::summarise(N = dplyr::n() - sum(is.na(Value))
-                     , NumNAs = sum(is.na(Value))
-                     , Min = min(Value, na.rm = TRUE)
-                     , Max = max(Value, na.rm = TRUE)
-                     , Mean = mean(Value, na.rm = TRUE)
-                     , Median = median(Value, na.rm = TRUE)
-                     , SD = sd(Value, na.rm = TRUE)
-                     , Kurtosis = moments::kurtosis(Value, na.rm = TRUE)
-                     , Skewness = moments::skewness(Value, na.rm = TRUE)
-                     , SkewnessSq = Skewness * Skewness
-                     , .groups = "drop_last")
-  write.table(WS.STATE.transf.stats
-              , file.path(out.dir, "Histograms", paste0(state, "_TransfData_stats.tab"))
-              , sep = "\t", col.names = TRUE, row.names = FALSE, append = FALSE)
-}
-tictoc::toc(log = TRUE)
-# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+    WS.STATE.FinalTransf.rownames <- WS.STATE.FinalTransf %>%
+      tibble::remove_rownames() %>%
+      tibble::column_to_rownames(var = "COMID")
 
-# STEP 6: PCA ----
+    WS.STATE.FinalTransf_complete <- WS.STATE.FinalTransf.rownames %>%
+      filter(complete.cases(.))
 
-if(file.exists(file.path(out.dir, "PCA", paste0(state, "_PCAresults.rda")))){
-  load(file.path(out.dir, "PCA", paste0(state, "_PCAresults.rda")))
-} else {
+    WS.STATE.PCA_complete <- FactoMineR::PCA(WS.STATE.FinalTransf_complete,
+                                             scale.unit = TRUE,
+                                             graph = FALSE)
 
-  WS.STATE.FinalTransf.rownames <- WS.STATE.FinalTransf %>%
-    tibble::remove_rownames() %>%
-    tibble::column_to_rownames(var = "COMID")
+    ncpGTpctvar <- min(which(factoextra::get_eigenvalue(WS.STATE.PCA_complete)[, 3] >= pct_var))
 
-  WS.STATE.FinalTransf_complete <- WS.STATE.FinalTransf.rownames %>%
-    filter(complete.cases(.))
+    ## Impute NA values ----
+    tictoc::tic("Impute missing values")
+    message("Number of missing values by variable")
+    WS.STATE.FinalTransf %>% summarise(across(everything(), ~ sum(is.na(.)))) %>% pivot_longer(cols = everything()) %>% print(n=Inf) # print number of missing values imputed for each variable
 
-  WS.STATE.PCA_complete <- FactoMineR::PCA(WS.STATE.FinalTransf_complete,
-                                           scale.unit = TRUE,
-                                           graph = FALSE)
+    WS.STATE.impute.ALL.rownames <- missMDA::imputePCA(WS.STATE.FinalTransf.rownames,
+                                                       ncp = ncpGTpctvar, scale = TRUE,
+                                                       maxiter = 500)
+    save(WS.STATE.impute.ALL.rownames,
+         file = file.path(out.dir, "PCA", paste0(state, "_ImputedData.rda")))
 
-  ncpGTpctvar <- min(which(factoextra::get_eigenvalue(WS.STATE.PCA_complete)[, 3] >= pct_var))
+    WS.STATE.imputedvals <- as.data.frame(WS.STATE.impute.ALL.rownames$completeObs)
+    save(WS.STATE.imputedvals, file = file.path(out.dir, "PCA",
+                                                paste0(state, "_Input4PCA.rda")))
+    tictoc::toc(log = TRUE)
 
-  ## Impute NA values ----
-  tictoc::tic("Impute missing values")
-  message("Number of missing values by variable")
-  WS.STATE.FinalTransf %>% summarise(across(everything(), ~ sum(is.na(.)))) %>% pivot_longer(cols = everything()) %>% print(n=Inf) # print number of missing values imputed for each variable
+    ## Perform PCA ----
+    tictoc::tic("Perform PCA")
 
-  WS.STATE.impute.ALL.rownames <- missMDA::imputePCA(WS.STATE.FinalTransf.rownames,
-                                                     ncp = ncpGTpctvar, scale = TRUE,
-                                                     maxiter = 500)
-  save(WS.STATE.impute.ALL.rownames,
-       file = file.path(out.dir, "PCA", paste0(state, "_ImputedData.rda")))
+    WS.STATE.PCA.rownames <- FactoMineR::PCA(WS.STATE.imputedvals,
+                                             scale.unit = TRUE,
+                                             ncp = ncpGTpctvar,
+                                             graph = FALSE)
 
-  WS.STATE.imputedvals <- as.data.frame(WS.STATE.impute.ALL.rownames$completeObs)
-  save(WS.STATE.imputedvals, file = file.path(out.dir, "PCA",
-                                              paste0(state, "_Input4PCA.rda")))
+    ## Scree plot
+    p <- factoextra::fviz_screeplot(WS.STATE.PCA.rownames, addlabels = TRUE, ylim = c(0, 50),
+                                    linecolor = "black")
+    ggplot2::ggsave(file = file.path(out.dir, "PCA"
+                                     , paste0(state, "PCA_screeplot.png")),
+                    p, dpi = 600, width = 5, height = 5, units = "in")
+    ## Variable plot
+    p <- factoextra::fviz_pca_var(WS.STATE.PCA.rownames, col.var = "contrib", add.labels = TRUE
+                                  , gradient.cols = c("#85D54AFF", "#2D708EFF", "#440154FF")
+                                  , labelsize = 3, repel = TRUE)
+    ggplot2::ggsave(file = file.path(out.dir, "PCA", paste0(state, "_PCA_variables.png"))
+                    , p, dpi = 600, width = 6, height = 6, units = "in")
+
+    # Write outputs including eigenvalues, individuals, and variables
+    write.table(WS.STATE.PCA.rownames$eig
+                , file.path(out.dir, "PCA", paste0(state, "PCA_eigenvalues.tab"))
+                , append = FALSE, col.names = TRUE, row.names = TRUE, sep = "\t")
+    write.table(WS.STATE.PCA.rownames$ind
+                , file.path(out.dir, "PCA", paste0(state, "PCA_individuals.tab"))
+                , append = FALSE, col.names = TRUE, row.names = TRUE, sep = "\t")
+    write.table(WS.STATE.PCA.rownames$var
+                , file.path(out.dir, "PCA", paste0(state, "PCA_Variables.tab"))
+                , append = FALSE, col.names = TRUE, row.names = TRUE, sep = "\t")
+
+    save(WS.STATE.PCA.rownames, file = file.path(out.dir, "PCA", paste0(state, "_PCAresults.rda")))
+  }
   tictoc::toc(log = TRUE)
 
-  ## Perform PCA ----
-  tictoc::tic("Perform PCA")
+  # STEP 7: HCPC ----
+  tictoc::tic("Perform HCPC")
+  time1 <- Sys.time()
 
-  WS.STATE.PCA.rownames <- FactoMineR::PCA(WS.STATE.imputedvals,
-                                           scale.unit = TRUE,
-                                           ncp = ncpGTpctvar,
-                                           graph = FALSE)
+  # Calculate the minimum number of COMIDs in a cluster
+  numCOMIDs <- nrow(WS.STATE.PCA.rownames$ind$coord)
+  minCOMIDs <- ceiling(numCOMIDs * minCOMIDsCluster)
+  maxclust <- floor(1/minCOMIDsCluster)
 
-  ## Scree plot
-  p <- factoextra::fviz_screeplot(WS.STATE.PCA.rownames, addlabels = TRUE, ylim = c(0, 50),
-                                  linecolor = "black")
-  ggplot2::ggsave(file = file.path(out.dir, "PCA"
-                                   , paste0(state, "PCA_screeplot.png")),
-                  p, dpi = 600, width = 5, height = 5, units = "in")
-  ## Variable plot
-  p <- factoextra::fviz_pca_var(WS.STATE.PCA.rownames, col.var = "contrib", add.labels = TRUE
-                                , gradient.cols = c("#85D54AFF", "#2D708EFF", "#440154FF")
-                                , labelsize = 3, repel = TRUE)
-  ggplot2::ggsave(file = file.path(out.dir, "PCA", paste0(state, "_PCA_variables.png"))
-                  , p, dpi = 600, width = 6, height = 6, units = "in")
+  num_criteria <- data.frame(numclust = c(), meets_criteria = c())
+  pick_list <- data.frame(state = c(), numclust = c(), fn = c())
+  file_names <- c()
 
-  # Write outputs including eigenvalues, individuals, and variables
-  write.table(WS.STATE.PCA.rownames$eig
-              , file.path(out.dir, "PCA", paste0(state, "PCA_eigenvalues.tab"))
-              , append = FALSE, col.names = TRUE, row.names = TRUE, sep = "\t")
-  write.table(WS.STATE.PCA.rownames$ind
-              , file.path(out.dir, "PCA", paste0(state, "PCA_individuals.tab"))
-              , append = FALSE, col.names = TRUE, row.names = TRUE, sep = "\t")
-  write.table(WS.STATE.PCA.rownames$var
-              , file.path(out.dir, "PCA", paste0(state, "PCA_Variables.tab"))
-              , append = FALSE, col.names = TRUE, row.names = TRUE, sep = "\t")
+  # Perform clustering
+  fc <- fastcluster::hclust.vector(as.matrix(WS.STATE.PCA.rownames$ind$coord), method = "ward")
 
-  save(WS.STATE.PCA.rownames, file = file.path(out.dir, "PCA", paste0(state, "_PCAresults.rda")))
-}
-tictoc::toc(log = TRUE)
+  dated <- format(lubridate::now(), "%Y%m%d%H%M%S")
 
-# STEP 7: HCPC ----
-tictoc::tic("Perform HCPC")
-time1 <- Sys.time()
+  if (is.null(user_numclust)) {
 
-# Calculate the minimum number of COMIDs in a cluster
-numCOMIDs <- nrow(WS.STATE.PCA.rownames$ind$coord)
-minCOMIDs <- ceiling(numCOMIDs * minCOMIDsCluster)
-maxclust <- floor(1/minCOMIDsCluster)
+    message("User did not provide cluster number.")
+    numclust <- seq(maxclust, 1, by = -1)
 
-num_criteria <- data.frame(numclust = c(), meets_criteria = c())
-file_names <- c()
+    for (c in seq_along(numclust)) {
+      numtry <- numclust[c]
+      print(numtry)
 
-if(nrow(WS.STATE.PCA.rownames$ind$coord)<numkk){
-  numkk <- Inf
-}
+      tictoc::tic("Perform hierarchical clustering")
 
-fc <- fastcluster::hclust.vector(as.matrix(WS.STATE.PCA.rownames$ind$coord), method = "ward")
+      temp_tree <- cutree(fc, k = numtry)
+      temp_df <- data.frame(COMID = names(temp_tree), ClusterID = temp_tree %>% unname())
 
-if (is.null(user_numclust)) {
+      temp_df_summary <- temp_df %>%
+        dplyr::group_by(ClusterID) %>%
+        dplyr::summarize(n = dplyr::n())
+
+      fn_name <- paste0(state, "_ClusterGraphics_", dated, "_", numtry, "_", commit_hash,".png")
+      fn = file.path(out.dir, fn_name)
+
+      file_names <- c(file_names, fn)
+
+      clusterGraphic(clusters = temp_df %>% mutate(COMID = as.integer(COMID)),
+                     pca1 = WS.STATE.PCA.rownames,
+                     flowlines = NHD.STATE,
+                     sites = NA,
+                     STATE.map = STATE.shp,
+                     map.title = state,
+                     file.name = fn)
+
+      file.copy(fn, file.path("inst", "extdata", stateAbb, fn_name), overwrite = TRUE)
+
+      rda.name <- paste0(state, "_ClusterAssignments_", dated, "_", numtry, "_", commit_hash)
+      assign(rda.name, temp_df)
+      do.call("use_data", list(as.name(rda.name), overwrite = TRUE))
+
+      pick_list <- pick_list %>% bind_rows(data.frame(state = state, numclust = as.character(numtry), fn = rda.name))
+
+      if (min(temp_df_summary$n) > minCOMIDs) {
+        msg <- paste0(numtry, " clusters meet the criteria specified.")
+        message(msg)
+
+        num_criteria <- num_criteria %>% bind_rows(data.frame(num_clust = numtry, meets_criteria = "yes"))
+      } else { # try then next lower number of clusters
+        msg <- "Smallest cluster contains too few reaches."
+        num_criteria <- num_criteria %>% bind_rows(data.frame(num_clust = numtry, meets_criteria = "no"))
+        message(msg)
+      }
 
 
-  message("User did not provide cluster number.")
-  numclust <- seq(maxclust, 1, by = -1)
 
-  for (c in seq_along(numclust)) {
-    numtry <- numclust[c]
-    print(numtry)
+      tictoc::toc(log = TRUE)
+      } # end of for loop
 
-    tictoc::tic("Perform hierarchical clustering")
+
+
+    rm(msg, numtry)
+
+  } else { # use the user-desired number of clusters
+
+    numtry <- user_numclust
+    message("User did provide cluster number.")
+
 
     temp_tree <- cutree(fc, k = numtry)
     temp_df <- data.frame(COMID = names(temp_tree), ClusterID = temp_tree %>% unname())
 
 
-    dated <- format(lubridate::now(), "%Y%m%d%H%M%S")
     fn_name <- paste0(state, "_ClusterGraphics_", dated, "_", numtry,"_fastclust", ".png")
     fn = file.path(out.dir, fn_name)
 
@@ -559,199 +618,37 @@ if (is.null(user_numclust)) {
 
     file.copy(fn, file.path("inst", "extdata", stateAbb, fn_name), overwrite = TRUE)
 
-    # if(numtry != 1){
-    #   message(paste0("starting hcpc: ", numtry))
-    #   WS.STATE.HCPC <- FactoMineR::HCPC(WS.STATE.PCA.rownames, nb.clust = numtry,
-    #                                     kk = numkk, consol = FALSE, graph = FALSE)
-    #   save(WS.STATE.HCPC, file = file.path(out.dir, "HCPC",
-    #                                        paste0(state, "_HCPC_", numtry, ".rda")))
-    #   tictoc::toc(log = TRUE)
-    #   message(paste0("made it past hcpc numtry: ", numtry))
-    #   df.temp <- as.data.frame(WS.STATE.HCPC$data.clust) %>%
-    #     tibble::rownames_to_column(var = "COMID") %>%
-    #     dplyr::rename(ClusterID = clust) %>%
-    #     dplyr::select(COMID, ClusterID) %>%
-    #     left_join(sc_id %>% mutate(COMID = as.character(COMID)), by = "COMID")
-    #
-    #   df.tempSummary <- df.temp %>%
-    #     dplyr::group_by(ClusterID) %>%
-    #     dplyr::summarize(n = dplyr::n())
-    #
-    #   write.table(df.temp, file.path(out.dir, "HCPC"
-    #                                  , paste0("Clusters_nbclust", numtry, "_kk",
-    #                                           numkk, ".tab"))
-    #               , append = FALSE, col.names = TRUE, row.names = FALSE, sep = "\t")
-    #   write.table(df.tempSummary, file.path(out.dir, "HCPC"
-    #                                         , paste0("NCOMIDs_nbclust", numtry, "_kk",
-    #                                                  numkk, ".tab"))
-    #               , append = FALSE, col.names = TRUE, row.names = FALSE, sep = "\t")
-    #
-    #
-    #   if (min(df.tempSummary$n) > minCOMIDs) { # stop with this
-    #     msg <- paste0(numtry, " clusters meet the criteria specified.")
-    #     message(msg)
-    #
-    #     num_criteria <- num_criteria %>% bind_rows(data.frame(num_clust = numtry, meets_criteria = "yes"))
-    #     #break
-    #   }
-    #   else { # try then next lower number of clusters
-    #     msg <- "Smallest cluster contains too few reaches."
-    #     num_criteria <- num_criteria %>% bind_rows(data.frame(num_clust = numtry, meets_criteria = "no"))
-    #     message(msg)
-    #   }
-    # }
-    # else{
-    #   df.temp <- data.frame(COMID = dimnames(WS.STATE.PCA.rownames$ind$coord)[[1]],
-    #                         ClusterID = 1) %>%
-    #     left_join(sc_id %>% mutate(COMID = as.character(COMID)), by = "COMID")
-    #
-    #   df.tempSummary <- df.temp %>%
-    #     dplyr::group_by(ClusterID) %>%
-    #     dplyr::summarize(n = dplyr::n())
-    #
-    #   write.table(df.temp, file.path(out.dir, "HCPC"
-    #                                  , paste0("Clusters_nbclust", numtry, "_kk",
-    #                                           numkk, ".tab"))
-    #               , append = FALSE, col.names = TRUE, row.names = FALSE, sep = "\t")
-    #   write.table(df.tempSummary, file.path(out.dir, "HCPC"
-    #                                         , paste0("NCOMIDs_nbclust", numtry, "_kk",
-    #                                                  numkk, ".tab"))
-    #               , append = FALSE, col.names = TRUE, row.names = FALSE, sep = "\t")
-    #
-    #   num_criteria <- num_criteria %>% bind_rows(data.frame(num_clust = 1, meets_criteria = "yes"))
-    #
-    # }
-    #
-    # dated <- format(lubridate::now(), "%Y%m%d%H%M%S")
-    # fn_name <- paste0(state, "_ClusterGraphics_", dated, "_", numtry, "_", numkk, "_", commit_hash, ".png")
-    # fn = file.path(out.dir, fn_name)
-    #
-    # file_names <- c(file_names, fn)
-    # ## Call clusterGraphic function
-    # clusterGraphic(clusters = df.temp %>% mutate(COMID = as.integer(COMID)),
-    #                pca1 = WS.STATE.PCA.rownames,
-    #                flowlines = NHD.STATE,
-    #                sites = NA,
-    #                STATE.map = STATE.shp,
-    #                map.title = state,
-    #                file.name = fn)
-    #
-    # file.copy(fn, file.path("inst", "extdata", stateAbb, fn_name), overwrite = TRUE)
-    #
-    # rda.name <- paste0(state, "_ClusterAssignments_", dated, "_", numtry, "_", numkk, "_", commit_hash)
-    # assign(rda.name, df.temp)
-    # do.call("use_data", list(as.name(rda.name), overwrite = TRUE))
-    #
-    # tictoc::toc(log = TRUE)
-  } # END for loop
+    rda.name <- paste0(state, "_ClusterAssignments_", dated, "_", numtry, "_", commit_hash)
+    assign(rda.name, temp_df)
+    do.call("use_data", list(as.name(rda.name), overwrite = TRUE))
+  } # End if user-desired number of clusters
+  tictoc::toc(log = TRUE)
 
-  rm(msg, numtry)
+  num_criteria$file_names <- file_names
 
-} else { # use the user-desired number of clusters
+  default_file_name <- num_criteria %>% filter(meets_criteria == "yes") %>% arrange(desc(num_clust)) %>% slice(1) %>% pull(file_names)
+  default_numclust <- num_criteria %>% filter(meets_criteria == "yes") %>% arrange(desc(num_clust)) %>% slice(1) %>% pull(num_clust)
 
-  numtry <- user_numclust
-  message("User did provide cluster number.")
+  default_fn <- file.path(default_file_name)
+  file.copy(default_fn, file.path("inst", "extdata", stateAbb,
+                                  paste0(state, "_ClusterGraphics_", dated, "_", "default", "_", default_numclust, "_", commit_hash,  ".png")), overwrite = TRUE)
 
+  # copy default in data
+  default_assignment <- basename(default_file_name) %>% str_replace(".png", ".rda") %>% str_replace("Graphics", "Assignments")
+  file.copy(file.path("data", default_assignment), file.path("data", str_replace(default_assignment, paste0("_", default_numclust, "_"), paste0("_default_", default_numclust, "_"))))
 
-  temp_tree <- cutree(fc, k = numtry)
-  temp_df <- data.frame(COMID = names(temp_tree), ClusterID = temp_tree %>% unname())
+  pick_list <- pick_list %>% bind_rows(data.frame(state = state, numclust = "default", fn = str_remove(str_replace(default_assignment, paste0("_", default_numclust, "_"), paste0("_default_", default_numclust, "_")), ".rda")))
 
+  time2 <- Sys.time()
 
-  dated <- format(lubridate::now(), "%Y%m%d%H%M%S")
-  fn_name <- paste0(state, "_ClusterGraphics_", dated, "_", numtry,"_fastclust", ".png")
-  fn = file.path(out.dir, fn_name)
+  time2 - time1
+  beepr::beep(8)
+  tictoc::toc(log = TRUE)
 
+  ## print time spent ----
+  print(state)
+  tictoc::toc(log = TRUE)
 
-  clusterGraphic(clusters = temp_df %>% mutate(COMID = as.integer(COMID)),
-                 pca1 = WS.STATE.PCA.rownames,
-                 flowlines = NHD.STATE,
-                 sites = NA,
-                 STATE.map = STATE.shp,
-                 map.title = state,
-                 file.name = fn)
-
-  file.copy(fn, file.path("inst", "extdata", stateAbb, fn_name), overwrite = TRUE)
-
-  # tictoc::tic("Perform hierarchical clustering")
-  # WS.STATE.HCPC <- FactoMineR::HCPC(WS.STATE.PCA.rownames, nb.clust = user_numclust,
-  #                                   kk = numkk, consol = FALSE, graph = FALSE)
-  # save(WS.STATE.HCPC, file = file.path(out.dir, "HCPC",
-  #                                      paste0(state, "_HCPC_", user_numclust, ".rda")))
-  # df.temp <- as.data.frame(WS.STATE.HCPC$data.clust) %>%
-  #   tibble::rownames_to_column(var = "COMID") %>%
-  #   dplyr::rename(ClusterID = clust) %>%
-  #   dplyr::select(COMID, ClusterID) %>%
-  #   left_join(sc_id %>% mutate(COMID = as.character(COMID)), by = "COMID")
-  #
-  # df.tempSummary <- df.temp %>%
-  #   dplyr::group_by(ClusterID) %>%
-  #   dplyr::summarize(n = dplyr::n())
-  #
-  # write.table(df.temp, file.path(out.dir, "HCPC"
-  #                                , paste0("Clusters_nbclust", user_numclust,
-  #                                         "_kk", numkk, ".tab"))
-  #             , append = FALSE, col.names = TRUE, row.names = FALSE, sep = "\t")
-  # finalNumClust <- user_numclust
-  #
-  # df.clusters <- read.delim(file.path(out.dir, "HCPC"
-  #                                     , paste0("Clusters_nbclust", user_numclust, "_kk", numkk, ".tab"))
-  #                           , header = TRUE, sep = "\t")
-  #
-  # write.csv(df.temp, file.path(out.dir, paste0(state, "ClusterIDs_", yyyymmdd, ".csv"))
-  #           , row.names = FALSE)
-  #
-  # dated <- format(lubridate::now(), "%Y%m%d%H%M%S")
-  # fn_name <- paste0(state, "_ClusterGraphics_", dated, "_", numtry, "_", numkk, "_", commit_hash, ".png")
-  # fn = file.path(out.dir, fn_name)
-  #
-  # ## Call clusterGraphic function
-  # clusterGraphic(clusters = df.temp %>% mutate(COMID = as.integer(COMID)),
-  #                pca1 = WS.STATE.PCA.rownames,
-  #                flowlines = NHD.STATE,
-  #                sites = NA,
-  #                STATE.map = STATE.shp,
-  #                map.title = state,
-  #                file.name = fn)
-  #
-  # file.copy(fn, file.path("inst", "extdata", stateAbb, fn_name), overwrite = TRUE)
-  #
-  # rda.name <- paste0(state, "_ClusterAssignments_", dated, "_", numtry, "_", numkk, "_", commit_hash)
-  # assign(rda.name, df.temp)
-  # do.call("use_data", list(as.name(rda.name), overwrite = TRUE))
-  #
-  # tictoc::toc(log = TRUE)
-
-} # End if user-desired number of clusters
-tictoc::toc(log = TRUE)
-
-# HCPC in total
-# copy default into extdata
-# num_criteria$file_names <- file_names
-#
-# default_file_name <- num_criteria %>% filter(meets_criteria == "yes") %>% arrange(desc(num_clust)) %>% slice(1) %>% pull(file_names)
-# default_numclust <- num_criteria %>% filter(meets_criteria == "yes") %>% arrange(desc(num_clust)) %>% slice(1) %>% pull(num_clust)
-#
-# default_fn <- file.path(default_file_name)
-# file.copy(default_fn, file.path("inst", "extdata", stateAbb,
-#                                 paste0(state, "_ClusterGraphics_", dated, "_", "default", "_", default_numclust, "_", numkk, "_", commit_hash,  ".png")), overwrite = TRUE)
-#
-# # copy default in data
-# default_assignment <- basename(default_file_name) %>% str_replace(".png", ".rda") %>% str_replace("Graphics", "Assignments")
-# file.copy(file.path("data", default_assignment), file.path("data", str_replace(default_assignment, paste0("_", default_numclust, "_"), paste0("_default_", default_numclust, "_"))))
-#
-# time2 <- Sys.time()
-#
-# time2 - time1
-# beepr::beep(8)
-# tictoc::toc(log = TRUE)
-#
-#
-# ## print time spent ----
-# print(state)
-# print(paste0("Pct Variation: ", pct_var))
-# print(paste0("Number of components accounting for >pct variation: ", ncpGTpctvar))
-# print(paste0("Number of components retained by the PCA: ", ncpGTpctvar))
-# print(paste0("Number kk: ", numkk))
-# print(paste0("Min number reaches in smallest cluster: ", minCOMIDs))
-# tictoc::toc(log = TRUE)
+  return(pick_list)
+}
 
