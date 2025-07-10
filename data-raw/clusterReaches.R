@@ -63,11 +63,12 @@
 #' @export
 
 rm(list = ls())
+commit_hash <- system("git rev-parse --short=8 HEAD", intern = TRUE)
 
 # STEP 1: Prep ----
 ## set vars ----
 tictoc::tic("Total")
-state <- "Washington"
+state <- "South Carolina"
 stateAbb <- state.abb[which(state.name == state)]
 yyyymmdd <- format(lubridate::now(), "%Y%m%d")
 clusterByEco <- FALSE
@@ -75,7 +76,7 @@ qc_keep <- c("QC_04", "QC_05", "QC_08","QC_MA")
 pct_var <- 60   # minimum percent of variation explained by components of PCA
 minCOMIDsCluster <- 0.2  # percent of COMIDs minimum per cluster, expressed as a proportion
 user_numclust <- NULL # user can use this parameter to override the default method of determining the final number of clusters
-numkk <- 20000 # number of clusters to be used in the k-means pre-processing step of the hierarchical clustering, may be set to any number between 2 and max # reaches; 100 is default
+numkk <- Inf # number of clusters to be used in the k-means pre-processing step of the hierarchical clustering, may be set to any number between 2 and max # reaches; 100 is default
 
 ## Declare functions ----
 `%>%` <- dplyr::`%>%`
@@ -167,7 +168,7 @@ if (file.exists(file.path(out.dir, "NHDPlus", paste0("NHD_SC_", state, ".rda")))
                                           aoi = 'watershed',
                                           state = stateAbb,
                                           showAreaSqKm = TRUE) %>%
-    select(-catareasqkm, -catareasqkmrp100, -wsareasqkmrp100) %>%
+    dplyr::select(-catareasqkm, -catareasqkmrp100, -wsareasqkmrp100) %>%
     rename("COMID" = "comid")
 
   sc_id <- WS.STATE %>% select(COMID) %>%
@@ -192,17 +193,21 @@ if (file.exists(file.path(out.dir, "NHDPlus", paste0("NHD_SC_", state, ".rda")))
       end_ind <- 500 * q
       print(paste0("getting ", start_ind, ":", end_ind))
 
-      temp.comids <- stragglers[start_ind:end_ind] %>% paste(collapse = ",")
+      temp.comids <- stragglers[start_ind:end_ind]
 
-      temp_sc <- StreamCatTools::sc_get_data(metric = sc_ws_metrics_str,
+      temp.comids <- temp.comids[!is.na(temp.comids)] %>% paste(collapse = ",")
+
+      tryCatch({temp_sc <- StreamCatTools::sc_get_data(metric = sc_ws_metrics_str,
                                              aoi = 'watershed',
                                              comid = temp.comids,
                                              showAreaSqKm = TRUE) %>%
-        select(-catareasqkm, -catareasqkmrp100, -wsareasqkmrp100) %>%
+        dplyr::select(-catareasqkm, -catareasqkmrp100, -wsareasqkmrp100) %>%
         rename("COMID" = "comid")
 
-
       sc_stragglers <- sc_stragglers %>% bind_rows(temp_sc)
+      }, error = function(msg){
+        return(sc_stragglers)
+      })
     }
   }
 
@@ -517,6 +522,10 @@ maxclust <- floor(1/minCOMIDsCluster)
 num_criteria <- data.frame(numclust = c(), meets_criteria = c())
 file_names <- c()
 
+if(nrow(WS.STATE.PCA.rownames$ind$coord)<numkk){
+  numkk <- Inf
+}
+
 if (is.null(user_numclust)) {
   message("User did not provide cluster number.")
   numclust <- seq(maxclust, 1, by = -1)
@@ -591,7 +600,7 @@ if (is.null(user_numclust)) {
       }
 
       dated <- format(lubridate::now(), "%Y%m%d%H%M%S")
-      fn_name <- paste0(state, "_ClusterGraphics_", dated, "_", numtry, "_", numkk, ".png")
+      fn_name <- paste0(state, "_ClusterGraphics_", dated, "_", numtry, "_", numkk, "_", commit_hash, ".png")
       fn = file.path(out.dir, fn_name)
 
       file_names <- c(file_names, fn)
@@ -606,7 +615,7 @@ if (is.null(user_numclust)) {
 
       file.copy(fn, file.path("inst", "extdata", stateAbb, fn_name), overwrite = TRUE)
 
-      rda.name <- paste0(state, "_ClusterAssignments_", dated, "_", numtry, "_", numkk)
+      rda.name <- paste0(state, "_ClusterAssignments_", dated, "_", numtry, "_", numkk, "_", commit_hash)
       assign(rda.name, df.temp)
       do.call("use_data", list(as.name(rda.name), overwrite = TRUE))
 
@@ -647,7 +656,7 @@ if (is.null(user_numclust)) {
             , row.names = FALSE)
 
   dated <- format(lubridate::now(), "%Y%m%d%H%M%S")
-  fn_name <- paste0(state, "_ClusterGraphics_", dated, "_", numtry, "_", numkk, ".png")
+  fn_name <- paste0(state, "_ClusterGraphics_", dated, "_", numtry, "_", numkk, "_", commit_hash, ".png")
   fn = file.path(out.dir, fn_name)
 
   ## Call clusterGraphic function
@@ -661,7 +670,7 @@ if (is.null(user_numclust)) {
 
   file.copy(fn, file.path("inst", "extdata", stateAbb, fn_name), overwrite = TRUE)
 
-  rda.name <- paste0(state, "_ClusterAssignments_", dated, "_", numtry, "_", numkk)
+  rda.name <- paste0(state, "_ClusterAssignments_", dated, "_", numtry, "_", numkk, "_", minCOMIDsCluster, "_", commit_hash)
   assign(rda.name, df.temp)
   do.call("use_data", list(as.name(rda.name), overwrite = TRUE))
 
@@ -678,10 +687,11 @@ default_file_name <- num_criteria %>% filter(meets_criteria == "yes") %>% arrang
 default_numclust <- num_criteria %>% filter(meets_criteria == "yes") %>% arrange(desc(num_clust)) %>% slice(1) %>% pull(num_clust)
 
 default_fn <- file.path(default_file_name)
-file.copy(default_fn, file.path("inst", "extdata", stateAbb, paste0(state, "_ClusterGraphics_", dated, "_", "default", "_", default_numclust, "_", numkk, ".png")), overwrite = TRUE)
+file.copy(default_fn, file.path("inst", "extdata", stateAbb,
+                                paste0(state, "_ClusterGraphics_", dated, "_", "default", "_", default_numclust, "_", numkk, "_", minCOMIDsCluster, "_", commit_hash,  ".png")), overwrite = TRUE)
 
 # copy default in data
-default_assignment <- list.files(file.path(getwd(), "data")) %>% str_subset(paste0("_", default_numclust, "_"))
+default_assignment <- basename(default_file_name) %>% str_replace(".png", ".rda") %>% str_replace("Graphics", "Assignments")
 file.copy(file.path("data", default_assignment), file.path("data", str_replace(default_assignment, paste0("_", default_numclust, "_"), paste0("_default_", default_numclust, "_"))))
 
 time2 <- Sys.time()

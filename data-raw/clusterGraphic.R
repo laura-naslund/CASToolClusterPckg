@@ -101,7 +101,15 @@ clusterGraphic <- function(clusters, pca1, flowlines, sites, STATE.map, map.titl
 
   # Create color vector (range 1 to 6)
   maxClusterID <- max(as.numeric(clusters$ClusterID))
-  if (maxClusterID == 6) {
+  if(maxClusterID == 10){
+    mag.vec <- viridis::viridis(39)[c(3,7,11,15,19,23, 27,31, 35, 39)]
+  } else if(maxClusterID == 9){
+    mag.vec <- viridis::viridis(35)[c(3,7,11,15,19,23, 27, 31, 35)]
+  } else if(maxClusterID == 8){
+    mag.vec <- viridis::viridis(31)[c(3,7,11,15,19,23, 27, 31)]
+  } else if(maxClusterID == 7){
+    mag.vec <- viridis::viridis(27)[c(3,7,11,15,19,23, 27)]
+  } else if (maxClusterID == 6) {
     mag.vec <- viridis::viridis(23)[c(3,7,11,15,19,23)]
   } else if (maxClusterID == 5) {
     mag.vec <- viridis::viridis(19)[c(3,7,11,15,19)]
