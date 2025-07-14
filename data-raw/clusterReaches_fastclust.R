@@ -113,7 +113,11 @@ clusterReaches <- function(state, pct_var = 60, minCOMIDsCluster = 0.2, user_num
   # downloaded GADM from https://gadm.org/
   STATE.shp <- sf::read_sf(file.path(in.dir,"gadm41_USA_shp/gadm41_USA_1.shp")) %>% filter(NAME_1 == state) %>%
     st_transform(crs = 5070) %>% st_buffer(300) # add 300 m buffer to deal with simplified input shapefile geometry
-  save(STATE.shp, file = file.path(out.dir, "Boundary", paste0(state, "_BoundaryShapefile.rda")))
+  boundary_fp <- file.path(out.dir, "Boundary", paste0(state, "_BoundaryShapefile.rda"))
+  save(STATE.shp, file = boundary_fp)
+
+  assign(paste0(state, "_BoundaryShapefile"), STATE.shp)
+  do.call("use_data", list(as.name(paste0(state, "_BoundaryShapefile")), overwrite = TRUE))
 
   ## Get NHD+ data from API ----
   # Citation for NHDPlus data: McKay, L., Bondelid, T., Dewald, T., Johnston, J., Moore, R., and Rea, A., “NHDPlus Version 2: User Guide”, 2012 and U.S. Geological Survey, 2019, National Hydrography Dataset (ver. USGS National Hydrography Dataset Best Resolution (NHD) for Hydrologic Unit (HU) [specify number of HuC2s here - 2001 (published 20191002), accessed [date] at https://www.epa.gov/waterdata/get-nhdplus-national-hydrography-dataset-plus-data

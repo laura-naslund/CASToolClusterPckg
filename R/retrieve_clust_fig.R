@@ -18,7 +18,7 @@ retrieve_clust_fig <- function(State, Clust_num){
     ret_fp <- NULL
     message("No data available with requested state and cluster number")
   } else{
-    ret_fp <- system.file("extdata", state.abb[which(state.name == State)], paste0(str_replace(ret_data_file, "Assignments", "Graphics"), ".png"), package = "CASToolClusterPckg")
+    ret_fp <- system.file("extdata", state.abb[which(state.name == State)], paste0(stringr::str_replace(ret_data_file, "Assignments", "Graphics"), ".png"), package = "CASToolClusterPckg")
   }
 
   return(ret_fp)

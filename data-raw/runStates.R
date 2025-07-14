@@ -1,4 +1,4 @@
-state.vec <- c("Oregon", "Washington", "Delaware")
+state.vec <- c("Connecticut")
 hash <- system("git rev-parse --short=8 HEAD", intern = TRUE)
 
 df <- data.frame(state = character(), numclust = character(), fn = character())
