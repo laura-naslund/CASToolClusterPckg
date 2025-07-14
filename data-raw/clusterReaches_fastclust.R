@@ -62,11 +62,6 @@
 #'
 #' @export
 
-state <- "Connecticut"
-pct_var <- 60
-minCOMIDsCluster <- 0.2
-user_numclust <- NULL
-
 rm(list = ls())
 commit_hash <- system("git rev-parse --short=8 HEAD", intern = TRUE)
 
@@ -340,7 +335,7 @@ clusterReaches <- function(state, pct_var = 60, minCOMIDsCluster = 0.2, user_num
 
       if (as.numeric(sd_dat) != 0) {
 
-        if (grepl("PCT", col)) {         # Do not transform PCT variables
+        if (grepl("pct", col)) {         # Do not transform PCT variables
           lambda <- NA_real_
           new_v <- WS.STATE.FinalRaw[[col]]
           df.temp <- df.temp %>% mutate(!!col := new_v)
@@ -629,15 +624,16 @@ clusterReaches <- function(state, pct_var = 60, minCOMIDsCluster = 0.2, user_num
   default_file_name <- num_criteria %>% filter(meets_criteria == "yes") %>% arrange(desc(num_clust)) %>% slice(1) %>% pull(file_names)
   default_numclust <- num_criteria %>% filter(meets_criteria == "yes") %>% arrange(desc(num_clust)) %>% slice(1) %>% pull(num_clust)
 
-  default_fn <- file.path(default_file_name)
-  file.copy(default_fn, file.path("inst", "extdata", stateAbb,
-                                  paste0(state, "_ClusterGraphics_", dated, "_", "default", "_", default_numclust, "_", commit_hash,  ".png")), overwrite = TRUE)
+  # default_fn <- file.path(default_file_name)
+  # file.copy(default_fn, file.path("inst", "extdata", stateAbb,
+  #                                 paste0(state, "_ClusterGraphics_", dated, "_", "default", "_", default_numclust, "_", commit_hash,  ".png")), overwrite = TRUE)
 
   # copy default in data
-  default_assignment <- basename(default_file_name) %>% str_replace(".png", ".rda") %>% str_replace("Graphics", "Assignments")
-  file.copy(file.path("data", default_assignment), file.path("data", str_replace(default_assignment, paste0("_", default_numclust, "_"), paste0("_default_", default_numclust, "_"))))
+  #default_assignment <- basename(default_file_name) %>% str_replace(".png", ".rda") %>% str_replace("Graphics", "Assignments")
+  #file.copy(file.path("data", default_assignment), file.path("data", str_replace(default_assignment, paste0("_", default_numclust, "_"), paste0("_default_", default_numclust, "_"))))
 
-  pick_list <- pick_list %>% bind_rows(data.frame(state = state, numclust = "default", fn = str_remove(str_replace(default_assignment, paste0("_", default_numclust, "_"), paste0("_default_", default_numclust, "_")), ".rda")))
+  #pick_list <- pick_list %>% bind_rows(data.frame(state = state, numclust = "default", fn = str_remove(str_replace(default_assignment, paste0("_", default_numclust, "_"), paste0("_default_", default_numclust, "_")), ".rda")))
+  pick_list <- pick_list %>% bind_rows(data.frame(state = state, numclust = "default", fn = paste0(state, "_ClusterAssignments_", dated, "_", default_numclust, "_", commit_hash)))
 
   time2 <- Sys.time()
 
