@@ -4,12 +4,12 @@
 \name{CASToolClusterPckg-package}
 \alias{CASToolClusterPckg}
 \alias{CASToolClusterPckg-package}
-\title{CASToolClusterPckg: What the Package Does (One Line, Title Case)}
+\title{CASToolClusterPckg: Serves cluster assignments, cluster figures, and state boundaries for the CASTool}
 \description{
 What the package does (one paragraph).
 }
 \author{
-\strong{Maintainer}: First Last \email{first.last@example.com}
+\strong{Maintainer}: Laura Naslund \email{Naslund.Laura@epa.gov}
 
 }
 \keyword{internal}
