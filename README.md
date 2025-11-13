@@ -6,7 +6,8 @@
 <!-- badges: start -->
 <!-- badges: end -->
 
-The goal of CASToolClusterPckg is to …
+The goal of CASToolClusterPckg is to serve state stream reach cluster
+assignments and figures.
 
 ## Installation
 
@@ -20,7 +21,8 @@ pak::pak("laura-naslund/CASToolClusterPckg")
 
 ## Example
 
-This is a basic example which shows you how to solve a common problem:
+This is an example of how to retrieve the cluster assignments data and
+the cluster assignments figure.
 
 ``` r
 library(CASToolClusterPckg)
@@ -42,19 +44,3 @@ magick::image_read(de_clust_2_fig)
 ```
 
 <img src="man/figures/README-example-1.png" width="100%" />
-
-``` r
-
-## Retrieve state boundary
-de <- retrieve_boundary("Delaware")
-ggplot2::ggplot(de)+
-  ggplot2::geom_sf()
-```
-
-<img src="man/figures/README-example-3.png" width="100%" />
-
-You’ll still need to render `README.Rmd` regularly, to keep `README.md`
-up-to-date. `devtools::build_readme()` is handy for this.
-
-In that case, don’t forget to commit and push the resulting figure
-files, so they display on GitHub and CRAN.
